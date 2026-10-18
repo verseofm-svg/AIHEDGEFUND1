@@ -1,0 +1,1340 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { 
+  TrendingUp, TrendingDown, Shield, Cpu, Activity, DollarSign, 
+  Settings, Play, Pause, SkipForward, RefreshCw, Layers, Brain, 
+  CheckCircle, AlertTriangle, XCircle, FileText, BarChart2, PieChart, 
+  Maximize2, Zap, ArrowRight, Lock, Eye, Sliders, Terminal, HelpCircle,
+  Clock, Database, Sparkles, Key
+} from 'lucide-react';
+import { 
+  ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, 
+  CartesianGrid, LineChart, Line, BarChart, Bar, Legend 
+} from 'recharts';
+
+// --- INITIAL DEFAULT AGENT PROMPTS & CONFIGS ---
+const INITIAL_AGENTS = {
+  quant: {
+    id: 'quant',
+    name: 'Quant & Technical Agent',
+    role: 'Analyzes technical indicators (RSI, MACD, Moving Averages, Volatility) to quantify short-term momentum and statistical edge.',
+    color: '#3b82f6',
+    model: 'gemini-3.1-flash-preview',
+    temperature: 0.2,
+    weight: 0.35,
+    prompt: `You are the Lead Quantitative Analyst at a hedge fund. Your job is to analyze quantitative data (RSI, MACD, SMA, Bollinger Bands, Volume) and produce a strictly numerical signal between -1.0 (Strong Short) and +1.0 (Strong Long) with technical rationale. Avoid qualitative fluff.`,
+    status: 'idle',
+    memory: ['RSI oversold signals verified on 1H frame', 'Volatility spike detected during market open'],
+    lastSignal: { action: 'BUY', score: 0.65, reasoning: 'RSI divergence detected at 38.2% Fibonacci support.' }
+  },
+  sentiment: {
+    id: 'sentiment',
+    name: 'Sentiment & News Agent',
+    role: 'Monitors real-time breaking news, earnings transcripts, social media sentiment, and macroeconomic announcements.',
+    color: '#ec4899',
+    model: 'gemini-3.1-flash-preview',
+    temperature: 0.4,
+    weight: 0.25,
+    prompt: `You are the Sentiment & Macro Analyst. Evaluate recent news headlines, regulatory updates, and market sentiment metrics for the asset. Quantify overall sentiment score from -1.0 to +1.0. Highlight sentiment drivers and key catalyst risks.`,
+    status: 'idle',
+    memory: ['Positive earnings guidance headline absorbed', 'Federal Reserve comments dovish'],
+    lastSignal: { action: 'BUY', score: 0.80, reasoning: 'Positive tech sector earnings surprise and favorable analyst upgrades.' }
+  },
+  fundamental: {
+    id: 'fundamental',
+    name: 'Fundamental & Valuation Agent',
+    role: 'Evaluates balance sheets, P/E ratios, free cash flow, competitive moat, and long-term intrinsic value.',
+    color: '#8b5cf6',
+    model: 'gemini-3.1-flash-preview',
+    temperature: 0.3,
+    weight: 0.20,
+    prompt: `You are the Fundamental Equity Analyst. Assess current valuation metrics (P/E, EV/EBITDA, Debt-to-Equity, FCF Yield) relative to historical averages and sector peers. Output score -1.0 to +1.0 with valuation thesis.`,
+    status: 'idle',
+    memory: ['P/E ratio 12% below 5-year average', 'FCF margin remains strong at 28%'],
+    lastSignal: { action: 'HOLD', score: 0.15, reasoning: 'Fairly valued relative to 5-year historical average; strong cash balances.' }
+  },
+  portfolio_manager: {
+    id: 'portfolio_manager',
+    name: 'Portfolio Manager Agent',
+    role: 'Synthesizes weighted recommendations from Quant, Sentiment, and Fundamental agents into a unified strategic trade proposal.',
+    color: '#10b981',
+    model: 'gemini-3.1-flash-preview',
+    temperature: 0.2,
+    weight: 1.0,
+    prompt: `You are the Chief Investment Officer / Portfolio Manager. Synthesize signals from the Quant, Sentiment, and Fundamental agents based on their assigned weights. Formulate an actionable trade proposal (BUY, SELL, HOLD) with target allocation percentage and confidence level.`,
+    status: 'idle',
+    memory: ['Overweight tech exposure authorized', 'Rebalancing target cash reserve to 15%'],
+    lastSignal: { action: 'BUY', score: 0.62, reasoning: 'Strong consensus between Quant and Sentiment agents outweighs neutral Fundamental valuation.' }
+  },
+  risk_manager: {
+    id: 'risk_manager',
+    name: 'Risk Management Agent',
+    role: 'Enforces hard programmatic and LLM guardrails: Max Drawdown, Position Size Limits, VaR, Stop-Loss and Veto power.',
+    color: '#f59e0b',
+    model: 'gemini-3.1-flash-preview',
+    temperature: 0.1,
+    weight: 1.0, // Absolute veto power
+    prompt: `You are the Chief Risk Officer (CRO). You possess absolute veto authority. Review proposed trades against current portfolio risk parameters: Max Position Size, Drawdown Limits, Volatility Limits, and Stop Losses. Approve, Reject, or Trim the position size.`,
+    status: 'idle',
+    memory: ['Max single position capped at 20%', 'Portfolio Drawdown limit at 8%'],
+    lastSignal: { action: 'APPROVED', score: 1.0, reasoning: 'Trade fits within 15% allocation limit and VaR boundary. Dynamic Stop-Loss set at 3.5%.' }
+  },
+  execution: {
+    id: 'execution',
+    name: 'Execution Broker Agent',
+    role: 'Simulates smart order routing (Alpaca/IBKR API), calculating slippage, commission, and fill price execution.',
+    color: '#06b6d4',
+    model: 'Deterministic Engine',
+    temperature: 0.0,
+    weight: 1.0,
+    prompt: `Execute approved trade via Broker API using TWAP/VWAP logic. Calculate fill price with simulated slippage and commission costs.`,
+    status: 'idle',
+    memory: ['API latency average 24ms', 'Alpaca paper trading route active'],
+    lastSignal: { action: 'EXECUTED', score: 1.0, reasoning: 'Order FILLED via Alpaca Router. 100 shares @ $185.42. Estimated slippage 0.02%.' }
+  }
+};
+
+// --- INITIAL ASSETS DATA GENERATOR ---
+const ASSETS_DATA = {
+  AAPL: { name: 'Apple Inc.', price: 185.40, change: '+1.45%', changeVal: 1.45, volatility: 0.012, pe: 28.5, rsi: 54, type: 'EQUITY' },
+  NVDA: { name: 'NVIDIA Corp.', price: 124.80, change: '+3.82%', changeVal: 3.82, volatility: 0.028, pe: 64.2, rsi: 68, type: 'EQUITY' },
+  TSLA: { name: 'Tesla Inc.', price: 218.50, change: '-2.10%', changeVal: -2.10, volatility: 0.035, pe: 58.1, rsi: 41, type: 'EQUITY' },
+  'BTC/USD': { name: 'Bitcoin', price: 64250.00, change: '+2.15%', changeVal: 2.15, volatility: 0.032, pe: 'N/A', rsi: 62, type: 'CRYPTO' },
+  'ETH/USD': { name: 'Ethereum', price: 3480.00, change: '+0.85%', changeVal: 0.85, volatility: 0.030, pe: 'N/A', rsi: 51, type: 'CRYPTO' }
+};
+
+// --- NEWS HEADLINES FOR SENTIMENT SIMULATION ---
+const SIMULATED_NEWS = {
+  AAPL: [
+    "Apple announces breakthrough in AI chips for next iPhone generation.",
+    "Supply chain reports suggest strong demand for premium MacBooks.",
+    "EU regulator requests clarification on App Store fee compliance.",
+    "Analyst upgrades AAPL target price to $210 citing services growth."
+  ],
+  NVDA: [
+    "NVIDIA unveils next-gen Blackwell architecture with 3x efficiency gains.",
+    "Hyperscalers increase AI infrastructure capex budgets by 25%.",
+    "Export restrictions update causes temporary uncertainty in overseas markets.",
+    "Major cloud provider orders $2B worth of GPU clusters."
+  ],
+  TSLA: [
+    "Tesla Robotaxi event date confirmed with live public demo scheduled.",
+    "Q3 vehicle delivery numbers slightly miss consensus estimates.",
+    "Energy storage deployment breaks quarterly record up 150% YoY.",
+    "EV price competition intensifies in primary international markets."
+  ],
+  'BTC/USD': [
+    "Spot Bitcoin ETF inflows hit new single-day record of $450M.",
+    "Institutional adoption surges as sovereign wealth fund allocates 1%.",
+    "On-chain metrics show long-term holders accumulating at key support.",
+    "Mining difficulty adjusts upward +3.5% reflecting network hash power."
+  ],
+  'ETH/USD': [
+    "Layer 2 network activity reaches all-time high transactions per second.",
+    "Ethereum staking yield stabilizes at 3.8% with total staked passing 32M ETH.",
+    "Major DeFi protocol upgrade reduces gas overhead by 40%.",
+    "Institutional treasury announces $100M Ethereum allocation."
+  ]
+};
+
+export default function App() {
+  // --- STATE MANAGEMENT ---
+  const [activeTab, setActiveTab] = useState('dashboard'); // dashboard | studio | map | risk | history
+  const [selectedAsset, setSelectedAsset] = useState('NVDA');
+  const [agents, setAgents] = useState(INITIAL_AGENTS);
+  const [selectedAgentNode, setSelectedAgentNode] = useState('portfolio_manager');
+  
+  // Simulation Controls
+  const [isRunning, setIsRunning] = useState(false);
+  const [simSpeed, setSimSpeed] = useState(2000); // 2 seconds
+  const [tickCount, setTickCount] = useState(1);
+  const [selectedApiKey, setSelectedApiKey] = useState('');
+  const [useLiveLLM, setUseLiveLLM] = useState(false);
+
+  // Portfolio State
+  const [portfolio, setPortfolio] = useState({
+    cash: 250000.00,
+    equity: 250000.00,
+    startBalance: 250000.00,
+    pnl: 0,
+    pnlPercent: 0,
+    winRate: 72.5,
+    totalTrades: 18,
+    winningTrades: 13,
+    maxDrawdown: 2.1
+  });
+
+  const [positions, setPositions] = useState([
+    { id: 'pos-1', ticker: 'NVDA', shares: 200, entryPrice: 118.50, currentPrice: 124.80, pnl: 1260.00, pnlPercent: 5.31, stopLoss: 115.00, takeProfit: 135.00 },
+    { id: 'pos-2', ticker: 'AAPL', shares: 300, entryPrice: 182.10, currentPrice: 185.40, pnl: 990.00, pnlPercent: 1.81, stopLoss: 178.00, takeProfit: 195.00 }
+  ]);
+
+  // Risk Rules State
+  const [riskRules, setRiskRules] = useState({
+    maxPositionSizePercent: 15, // Max 15% of portfolio per position
+    maxDrawdownThreshold: 8.0, // Max 8% portfolio drawdown before kill-switch
+    defaultStopLossPercent: 3.5,
+    defaultTakeProfitPercent: 8.0,
+    riskTolerance: 'BALANCED', // CONSERVATIVE | BALANCED | AGGRESSIVE
+    requireCroApproval: true,
+    maxDailyTrades: 10
+  });
+
+  // Price Charts Data state
+  const [priceHistory, setPriceHistory] = useState(() => {
+    const basePrice = ASSETS_DATA['NVDA'].price;
+    const history = [];
+    let curPrice = basePrice * 0.92;
+    for (let i = 30; i >= 0; i--) {
+      curPrice += (Math.random() - 0.48) * (curPrice * 0.015);
+      history.push({
+        time: `${30 - i}m ago`,
+        price: parseFloat(curPrice.toFixed(2)),
+        sma: parseFloat((curPrice * 0.99).toFixed(2)),
+        upperBand: parseFloat((curPrice * 1.02).toFixed(2)),
+        lowerBand: parseFloat((curPrice * 0.98).toFixed(2))
+      });
+    }
+    return history;
+  });
+
+  // Agent Thoughts / Deliberation Feed
+  const [deliberationLogs, setDeliberationLogs] = useState([]);
+  const [tradeHistory, setTradeHistory] = useState([
+    { id: 'tr-101', timestamp: '10:42:15 AM', ticker: 'NVDA', action: 'BUY', qty: 200, price: 118.50, total: 23700.00, status: 'FILLED', agentApproval: 'Approved by PM & Risk Mgr' },
+    { id: 'tr-100', timestamp: '09:31:05 AM', ticker: 'AAPL', action: 'BUY', qty: 300, price: 182.10, total: 54630.00, status: 'FILLED', agentApproval: 'Approved by PM & Risk Mgr' }
+  ]);
+
+  const logsEndRef = useRef(null);
+
+  // --- AUTO SCROLL LOGS ---
+  useEffect(() => {
+    if (logsEndRef.current) {
+      logsEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [deliberationLogs]);
+
+  // --- REGENERATE PRICE CHART ON ASSET SWITCH ---
+  useEffect(() => {
+    const basePrice = ASSETS_DATA[selectedAsset].price;
+    const newHistory = [];
+    let curPrice = basePrice * 0.93;
+    for (let i = 30; i >= 0; i--) {
+      curPrice += (Math.random() - 0.48) * (curPrice * (ASSETS_DATA[selectedAsset].volatility || 0.02));
+      newHistory.push({
+        time: `${30 - i}m ago`,
+        price: parseFloat(curPrice.toFixed(2)),
+        sma: parseFloat((curPrice * 0.995).toFixed(2)),
+        upperBand: parseFloat((curPrice * 1.025).toFixed(2)),
+        lowerBand: parseFloat((curPrice * 0.975).toFixed(2))
+      });
+    }
+    setPriceHistory(newHistory);
+  }, [selectedAsset]);
+
+  // --- SIMULATION STEP ENGINE ---
+  const runSimulationTick = async () => {
+    setTickCount(prev => prev + 1);
+    const asset = ASSETS_DATA[selectedAsset];
+    
+    // 1. Update Asset Price
+    const volatility = asset.volatility;
+    const priceChangePct = (Math.random() - 0.49) * volatility;
+    const newPrice = Math.max(1.0, parseFloat((asset.price * (1 + priceChangePct)).toFixed(2)));
+    asset.price = newPrice;
+    asset.changeVal = parseFloat((asset.changeVal + priceChangePct * 100).toFixed(2));
+    asset.change = `${asset.changeVal >= 0 ? '+' : ''}${asset.changeVal.toFixed(2)}%`;
+
+    // Append to price history
+    setPriceHistory(prev => {
+      const updated = [...prev.slice(1)];
+      const lastSma = prev[prev.length - 1]?.sma || newPrice;
+      const newSma = parseFloat((lastSma * 0.8 + newPrice * 0.2).toFixed(2));
+      updated.push({
+        time: 'Just now',
+        price: newPrice,
+        sma: newSma,
+        upperBand: parseFloat((newSma * 1.03).toFixed(2)),
+        lowerBand: parseFloat((newSma * 0.97).toFixed(2))
+      });
+      return updated;
+    });
+
+    // 2. Generate Agent Deliberation Pipeline
+    const timestamp = new Date().toLocaleTimeString();
+    
+    // Step A: Quant Agent Analysis
+    const rsiVal = Math.floor(30 + Math.random() * 45);
+    const macdHist = (Math.random() - 0.45).toFixed(2);
+    const quantAction = rsiVal < 40 || macdHist > 0.2 ? 'BUY' : (rsiVal > 65 ? 'SELL' : 'HOLD');
+    const quantScore = quantAction === 'BUY' ? (0.4 + Math.random() * 0.5).toFixed(2) : (quantAction === 'SELL' ? (-0.4 - Math.random() * 0.5).toFixed(2) : (Math.random() * 0.3 - 0.15).toFixed(2));
+    const quantReasoning = `RSI(14) at ${rsiVal}. MACD Histogram ${macdHist}. ${quantAction === 'BUY' ? 'Bullish divergence forming on 5m chart.' : (quantAction === 'SELL' ? 'Overbought conditions near resistance.' : 'Consolidation phase detected.')}`;
+
+    // Step B: Sentiment Agent Analysis
+    const headlines = SIMULATED_NEWS[selectedAsset];
+    const pickedHeadline = headlines[Math.floor(Math.random() * headlines.length)];
+    const sentimentScore = (Math.random() * 1.2 - 0.4).toFixed(2); // -0.4 to 0.8
+    const sentimentAction = sentimentScore > 0.3 ? 'BUY' : (sentimentScore < -0.2 ? 'SELL' : 'HOLD');
+    const sentimentReasoning = `News Analysis: "${pickedHeadline}" -> Polarity score: ${sentimentScore}. Sentiment skew is ${sentimentAction.toLowerCase()}ish.`;
+
+    // Step C: Fundamental Agent Analysis
+    const fundScore = asset.pe === 'N/A' ? 0.25 : (asset.pe < 35 ? 0.5 : -0.2);
+    const fundAction = fundScore > 0.2 ? 'BUY' : (fundScore < -0.1 ? 'SELL' : 'HOLD');
+    const fundReasoning = `Valuation metric evaluation: P/E: ${asset.pe}. Balance sheet health index 8.4/10. Intrinsic value estimate aligned with long position thesis.`;
+
+    // Step D: Portfolio Manager Synthesis (Weighted)
+    const weightedScore = (
+      quantScore * agents.quant.weight + 
+      sentimentScore * agents.sentiment.weight + 
+      fundScore * agents.fundamental.weight
+    ).toFixed(2);
+
+    let pmAction = 'HOLD';
+    if (weightedScore > 0.25) pmAction = 'BUY';
+    else if (weightedScore < -0.25) pmAction = 'SELL';
+
+    const pmReasoning = `Weighted Signal Aggregation (${weightedScore}). Quant: ${quantScore}, Sentiment: ${sentimentScore}, Fundamental: ${fundScore}. Consensus proposal: ${pmAction}.`;
+
+    // Step E: Risk Manager Inspection
+    let riskApproved = true;
+    let riskReason = 'Trade complies with maximum allocation rule (15%) and VaR boundaries.';
+    
+    // Risk check simulation
+    if (pmAction !== 'HOLD') {
+      const positionValue = (portfolio.equity * (riskRules.maxPositionSizePercent / 100));
+      if (positionValue > portfolio.cash && pmAction === 'BUY') {
+        riskApproved = false;
+        riskReason = `VETO: Insufficient cash buffer (${portfolio.cash.toFixed(2)}) for full position size.`;
+      } else if (portfolio.maxDrawdown > riskRules.maxDrawdownThreshold) {
+        riskApproved = false;
+        riskReason = `VETO: Maximum portfolio drawdown trigger active (${portfolio.maxDrawdown}% > ${riskRules.maxDrawdownThreshold}%).`;
+      }
+    }
+
+    // Step F: Execution Step (If Approved & Trade Recommended)
+    let executionLog = null;
+    if (pmAction !== 'HOLD' && riskApproved) {
+      const orderQty = Math.floor((portfolio.cash * 0.1) / newPrice) || 5;
+      const tradeVal = orderQty * newPrice;
+      
+      executionLog = {
+        id: `tr-${Date.now().toString().slice(-4)}`,
+        timestamp,
+        ticker: selectedAsset,
+        action: pmAction,
+        qty: orderQty,
+        price: newPrice,
+        total: tradeVal,
+        status: 'FILLED',
+        agentApproval: 'Approved by PM & CRO'
+      };
+
+      // Execute order state update
+      setTradeHistory(prev => [executionLog, ...prev]);
+
+      if (pmAction === 'BUY') {
+        setPortfolio(prev => ({
+          ...prev,
+          cash: prev.cash - tradeVal,
+          totalTrades: prev.totalTrades + 1
+        }));
+
+        setPositions(prev => {
+          const existing = prev.find(p => p.ticker === selectedAsset);
+          if (existing) {
+            const newShares = existing.shares + orderQty;
+            const newAvg = ((existing.shares * existing.entryPrice) + tradeVal) / newShares;
+            return prev.map(p => p.ticker === selectedAsset ? {
+              ...p,
+              shares: newShares,
+              entryPrice: parseFloat(newAvg.toFixed(2)),
+              currentPrice: newPrice
+            } : p);
+          } else {
+            return [...prev, {
+              id: `pos-${Date.now()}`,
+              ticker: selectedAsset,
+              shares: orderQty,
+              entryPrice: newPrice,
+              currentPrice: newPrice,
+              pnl: 0,
+              pnlPercent: 0,
+              stopLoss: parseFloat((newPrice * (1 - riskRules.defaultStopLossPercent / 100)).toFixed(2)),
+              takeProfit: parseFloat((newPrice * (1 + riskRules.defaultTakeProfitPercent / 100)).toFixed(2))
+            }];
+          }
+        });
+      }
+    }
+
+    // Update Agent States in memory
+    setAgents(prev => ({
+      ...prev,
+      quant: { ...prev.quant, status: 'active', lastSignal: { action: quantAction, score: quantScore, reasoning: quantReasoning } },
+      sentiment: { ...prev.sentiment, status: 'active', lastSignal: { action: sentimentAction, score: sentimentScore, reasoning: sentimentReasoning } },
+      fundamental: { ...prev.fundamental, status: 'active', lastSignal: { action: fundAction, score: fundScore, reasoning: fundReasoning } },
+      portfolio_manager: { ...prev.portfolio_manager, status: 'active', lastSignal: { action: pmAction, score: weightedScore, reasoning: pmReasoning } },
+      risk_manager: { ...prev.risk_manager, status: 'active', lastSignal: { action: riskApproved ? 'APPROVED' : 'VETOED', score: riskApproved ? 1.0 : 0.0, reasoning: riskReason } },
+      execution: { ...prev.execution, status: executionLog ? 'active' : 'idle', lastSignal: executionLog ? { action: 'EXECUTED', score: 1.0, reasoning: `Executed ${executionLog.action} ${executionLog.qty} @ $${executionLog.price}` } : prev.execution.lastSignal }
+    }));
+
+    // Update positions current prices
+    setPositions(prev => prev.map(pos => {
+      const currentVal = pos.shares * (pos.ticker === selectedAsset ? newPrice : pos.currentPrice);
+      const entryVal = pos.shares * pos.entryPrice;
+      const pnl = currentVal - entryVal;
+      const pnlPercent = (pnl / entryVal) * 100;
+      return {
+        ...pos,
+        currentPrice: pos.ticker === selectedAsset ? newPrice : pos.currentPrice,
+        pnl: parseFloat(pnl.toFixed(2)),
+        pnlPercent: parseFloat(pnlPercent.toFixed(2))
+      };
+    }));
+
+    // Append batch to Deliberation Logs
+    const logBatch = {
+      id: `tick-${Date.now()}`,
+      timestamp,
+      tick: tickCount,
+      ticker: selectedAsset,
+      price: newPrice,
+      quant: { action: quantAction, score: quantScore, text: quantReasoning },
+      sentiment: { action: sentimentAction, score: sentimentScore, text: sentimentReasoning },
+      fundamental: { action: fundAction, score: fundScore, text: fundReasoning },
+      pm: { action: pmAction, score: weightedScore, text: pmReasoning },
+      risk: { approved: riskApproved, text: riskReason },
+      execution: executionLog
+    };
+
+    setDeliberationLogs(prev => [...prev.slice(-40), logBatch]);
+  };
+
+  // Auto Tick Timer Loop
+  useEffect(() => {
+    let timer;
+    if (isRunning) {
+      timer = setInterval(() => {
+        runSimulationTick();
+      }, simSpeed);
+    }
+    return () => clearInterval(timer);
+  }, [isRunning, simSpeed, selectedAsset, portfolio, riskRules, agents]);
+
+  // Recalculate Portfolio Total Equity
+  useEffect(() => {
+    const totalPosVal = positions.reduce((acc, pos) => acc + (pos.shares * pos.currentPrice), 0);
+    const newEquity = portfolio.cash + totalPosVal;
+    const totalPnl = newEquity - portfolio.startBalance;
+    const totalPnlPct = (totalPnl / portfolio.startBalance) * 100;
+
+    setPortfolio(prev => ({
+      ...prev,
+      equity: parseFloat(newEquity.toFixed(2)),
+      pnl: parseFloat(totalPnl.toFixed(2)),
+      pnlPercent: parseFloat(totalPnlPct.toFixed(2))
+    }));
+  }, [positions, portfolio.cash]);
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans border-t-4 border-emerald-500 selection:bg-emerald-500 selection:text-slate-950">
+      
+      {/* HEADER BAR */}
+      <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur px-6 py-3 flex flex-wrap items-center justify-between gap-4 sticky top-0 z-50">
+        <div className="flex items-center space-x-3">
+          <div className="p-2 bg-emerald-500/10 border border-emerald-500/30 rounded-lg text-emerald-400">
+            <Cpu className="w-6 h-6 animate-pulse" />
+          </div>
+          <div>
+            <div className="flex items-center space-x-2">
+              <h1 className="font-bold text-lg tracking-wider text-slate-100 uppercase">Aethelgard AI Capital</h1>
+              <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-mono">
+                Multi-Agent LLM Firm v2.4
+              </span>
+            </div>
+            <p className="text-xs text-slate-400">Autonomous Quantitative & Fundamental Multi-Agent Trading System</p>
+          </div>
+        </div>
+
+        {/* Global Control Bar */}
+        <div className="flex items-center space-x-3">
+          {/* Tick Controls */}
+          <div className="flex items-center bg-slate-950 border border-slate-800 rounded-lg p-1 space-x-1">
+            <button
+              onClick={() => setIsRunning(!isRunning)}
+              className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all ${
+                isRunning 
+                  ? 'bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 border border-amber-500/30' 
+                  : 'bg-emerald-500 text-slate-950 hover:bg-emerald-400 font-bold'
+              }`}
+            >
+              {isRunning ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+              <span>{isRunning ? 'Pause Engine' : 'Start Auto-Tick'}</span>
+            </button>
+
+            <button
+              onClick={runSimulationTick}
+              disabled={isRunning}
+              className="px-2.5 py-1.5 rounded-md text-xs font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-40 flex items-center space-x-1"
+              title="Manual Step"
+            >
+              <SkipForward className="w-3.5 h-3.5" />
+              <span>Step</span>
+            </button>
+          </div>
+
+          {/* Tick Speed Selector */}
+          <div className="flex items-center bg-slate-950 border border-slate-800 rounded-lg px-2 py-1 text-xs space-x-2">
+            <Clock className="w-3.5 h-3.5 text-slate-400" />
+            <select
+              value={simSpeed}
+              onChange={(e) => setSimSpeed(Number(e.target.value))}
+              className="bg-transparent text-slate-300 focus:outline-none text-xs font-mono"
+            >
+              <option value={1000}>1s Tick</option>
+              <option value={2000}>2s Tick</option>
+              <option value={5000}>5s Tick</option>
+            </select>
+          </div>
+
+          {/* Gemini API Switcher */}
+          <button
+            onClick={() => {
+              const key = prompt('Enter Google Gemini API Key (Optional for real LLM reasoning):', selectedApiKey);
+              if (key !== null) {
+                setSelectedApiKey(key);
+                setUseLiveLLM(!!key);
+              }
+            }}
+            className={`flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-mono transition-all ${
+              useLiveLLM 
+                ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40' 
+                : 'bg-slate-800/60 text-slate-400 border-slate-700 hover:border-slate-600'
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+            <span>{useLiveLLM ? 'Live Gemini 3.1 Active' : 'Simulated LLM Engine'}</span>
+          </button>
+        </div>
+      </header>
+
+      {/* TOP METRICS STRIP */}
+      <div className="bg-slate-900 border-b border-slate-800 px-6 py-2.5 grid grid-cols-2 md:grid-cols-6 gap-4 font-mono text-xs">
+        <div className="border-r border-slate-800/80 pr-4">
+          <span className="text-slate-400 block text-[10px] uppercase tracking-wider">Total Portfolio Equity</span>
+          <span className="text-slate-100 text-sm font-bold">${portfolio.equity.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+        </div>
+
+        <div className="border-r border-slate-800/80 pr-4">
+          <span className="text-slate-400 block text-[10px] uppercase tracking-wider">Available Cash</span>
+          <span className="text-slate-200 text-sm font-semibold">${portfolio.cash.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+        </div>
+
+        <div className="border-r border-slate-800/80 pr-4">
+          <span className="text-slate-400 block text-[10px] uppercase tracking-wider">Total Realized P&L</span>
+          <span className={`text-sm font-bold flex items-center space-x-1 ${portfolio.pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+            {portfolio.pnl >= 0 ? <TrendingUp className="w-3.5 h-3.5 inline mr-1" /> : <TrendingDown className="w-3.5 h-3.5 inline mr-1" />}
+            {portfolio.pnl >= 0 ? '+' : ''}${portfolio.pnl.toLocaleString('en-US', { minimumFractionDigits: 2 })} ({portfolio.pnlPercent}%)
+          </span>
+        </div>
+
+        <div className="border-r border-slate-800/80 pr-4">
+          <span className="text-slate-400 block text-[10px] uppercase tracking-wider">Win Rate / Total Trades</span>
+          <span className="text-slate-200 text-sm font-semibold">{portfolio.winRate}% <span className="text-slate-500 font-normal">({portfolio.winningTrades}/{portfolio.totalTrades})</span></span>
+        </div>
+
+        <div className="border-r border-slate-800/80 pr-4">
+          <span className="text-slate-400 block text-[10px] uppercase tracking-wider">Max Portfolio Drawdown</span>
+          <span className={`text-sm font-semibold ${portfolio.maxDrawdown > riskRules.maxDrawdownThreshold ? 'text-rose-400' : 'text-amber-400'}`}>
+            {portfolio.maxDrawdown}% <span className="text-slate-500 text-[10px]">/ Limit {riskRules.maxDrawdownThreshold}%</span>
+          </span>
+        </div>
+
+        <div>
+          <span className="text-slate-400 block text-[10px] uppercase tracking-wider">Engine Pulse</span>
+          <span className="text-emerald-400 text-sm font-semibold flex items-center space-x-1">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping inline-block mr-1"></span>
+            Tick #{tickCount}
+          </span>
+        </div>
+      </div>
+
+      {/* NAVIGATION TABS */}
+      <div className="bg-slate-900/50 border-b border-slate-800 px-6 flex space-x-6 text-xs font-semibold tracking-wide">
+        {[
+          { id: 'dashboard', label: 'Trading Desk & Live Feed', icon: Activity },
+          { id: 'map', label: 'Agent Architecture Map', icon: Layers },
+          { id: 'studio', label: 'Agent Prompt Studio', icon: Brain },
+          { id: 'risk', label: 'Risk Guardrails & CRO Rules', icon: Shield },
+          { id: 'history', label: 'Audit Log & Positions', icon: FileText }
+        ].map((tab) => {
+          const Icon = tab.icon;
+          return (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex items-center space-x-2 py-3 border-b-2 transition-colors ${
+                activeTab === tab.id 
+                  ? 'border-emerald-400 text-emerald-400' 
+                  : 'border-transparent text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Icon className="w-4 h-4" />
+              <span>{tab.label}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* MAIN CONTAINER CONTENT */}
+      <main className="flex-1 p-6 space-y-6 overflow-y-auto">
+
+        {/* ================= TAB 1: DASHBOARD & LIVE FEED ================= */}
+        {activeTab === 'dashboard' && (
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            
+            {/* LEFT COLUMN: Asset & Price Chart & Controls (7 Cols) */}
+            <div className="lg:col-span-7 space-y-6">
+              
+              {/* Asset Selector Strip */}
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-wrap items-center justify-between gap-4">
+                <div className="flex items-center space-x-2">
+                  <span className="text-xs text-slate-400 font-mono">ASSET FOCUS:</span>
+                  <div className="flex space-x-1">
+                    {Object.keys(ASSETS_DATA).map(ticker => (
+                      <button
+                        key={ticker}
+                        onClick={() => setSelectedAsset(ticker)}
+                        className={`px-3 py-1 rounded-lg text-xs font-mono font-bold transition-all ${
+                          selectedAsset === ticker
+                            ? 'bg-emerald-500 text-slate-950 shadow-lg shadow-emerald-500/20'
+                            : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                        }`}
+                      >
+                        {ticker}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex items-center space-x-3 font-mono text-xs">
+                  <div>
+                    <span className="text-slate-400 block text-[10px]">CURRENT PRICE</span>
+                    <span className="text-base font-bold text-slate-100">${ASSETS_DATA[selectedAsset].price.toFixed(2)}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400 block text-[10px]">24H CHANGE</span>
+                    <span className={`text-xs font-bold ${ASSETS_DATA[selectedAsset].changeVal >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                      {ASSETS_DATA[selectedAsset].change}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400 block text-[10px]">RSI(14)</span>
+                    <span className="text-xs font-semibold text-amber-400">{ASSETS_DATA[selectedAsset].rsi}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Real-time Candlestick/Line Price Chart */}
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-2">
+                    <BarChart2 className="w-5 h-5 text-emerald-400" />
+                    <h2 className="font-bold text-sm text-slate-200 uppercase tracking-wide">Live Price Action & Technical Overlay</h2>
+                  </div>
+                  <div className="flex items-center space-x-3 text-xs font-mono">
+                    <span className="flex items-center space-x-1">
+                      <span className="w-2.5 h-0.5 bg-emerald-400 inline-block"></span>
+                      <span className="text-slate-400">Price</span>
+                    </span>
+                    <span className="flex items-center space-x-1">
+                      <span className="w-2.5 h-0.5 bg-amber-400 inline-block"></span>
+                      <span className="text-slate-400">SMA(20)</span>
+                    </span>
+                    <span className="flex items-center space-x-1">
+                      <span className="w-2.5 h-0.5 bg-indigo-400/50 inline-block"></span>
+                      <span className="text-slate-400">Bollinger</span>
+                    </span>
+                  </div>
+                </div>
+
+                <div className="h-72 w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={priceHistory} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id="colorPrice" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
+                          <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                      <XAxis dataKey="time" stroke="#64748b" tick={{ fontSize: 10 }} />
+                      <YAxis stroke="#64748b" tick={{ fontSize: 10 }} domain={['auto', 'auto']} />
+                      <Tooltip 
+                        contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '8px', fontSize: '12px' }}
+                        itemStyle={{ color: '#f8fafc' }}
+                      />
+                      <Area type="monotone" dataKey="price" stroke="#10b981" strokeWidth={2} fillOpacity={1} fill="url(#colorPrice)" />
+                      <Line type="monotone" dataKey="sma" stroke="#f59e0b" strokeWidth={1.5} dot={false} />
+                      <Line type="monotone" dataKey="upperBand" stroke="#818cf8" strokeDasharray="3 3" strokeWidth={1} dot={false} />
+                      <Line type="monotone" dataKey="lowerBand" stroke="#818cf8" strokeDasharray="3 3" strokeWidth={1} dot={false} />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              {/* Active Agent Consensus Summary Bar */}
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center justify-between">
+                  <span>Current Consensus Matrix</span>
+                  <span className="text-emerald-400 text-[10px]">Real-time Weighting Engine</span>
+                </h3>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  {[
+                    { agent: agents.quant, signal: agents.quant.lastSignal },
+                    { agent: agents.sentiment, signal: agents.sentiment.lastSignal },
+                    { agent: agents.fundamental, signal: agents.fundamental.lastSignal },
+                    { agent: agents.portfolio_manager, signal: agents.portfolio_manager.lastSignal }
+                  ].map(({ agent, signal }, idx) => (
+                    <div key={idx} className="bg-slate-950/60 border border-slate-800/80 rounded-lg p-3 space-y-1">
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span className="font-semibold text-slate-300 truncate">{agent.name.split(' ')[0]}</span>
+                        <span className="text-slate-500 font-mono">{(agent.weight * 100)}%</span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className={`text-xs font-bold font-mono px-2 py-0.5 rounded ${
+                          signal.action === 'BUY' ? 'bg-emerald-500/20 text-emerald-400' :
+                          signal.action === 'SELL' ? 'bg-rose-500/20 text-rose-400' : 'bg-slate-800 text-slate-300'
+                        }`}>
+                          {signal.action}
+                        </span>
+                        <span className="text-xs font-mono text-slate-400">Score: {signal.score}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+            </div>
+
+            {/* RIGHT COLUMN: Live Agent Deliberation Console (5 Cols) */}
+            <div className="lg:col-span-5 bg-slate-900 border border-slate-800 rounded-xl p-5 flex flex-col h-[640px]">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+                <div className="flex items-center space-x-2">
+                  <Terminal className="w-5 h-5 text-emerald-400" />
+                  <h2 className="font-bold text-sm text-slate-200 uppercase tracking-wide">Multi-Agent Deliberation Feed</h2>
+                </div>
+                <span className="text-[10px] text-slate-400 font-mono flex items-center space-x-1">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                  <span>Streaming Logic</span>
+                </span>
+              </div>
+
+              {/* Logs Stream Container */}
+              <div className="flex-1 overflow-y-auto mt-4 space-y-4 pr-1 font-mono text-xs">
+                {deliberationLogs.length === 0 ? (
+                  <div className="h-full flex flex-col items-center justify-center text-slate-500 space-y-2">
+                    <Brain className="w-8 h-8 stroke-1 text-slate-600 animate-pulse" />
+                    <p className="text-xs">Click "Start Auto-Tick" or "Step" to run agents...</p>
+                  </div>
+                ) : (
+                  deliberationLogs.map((log) => (
+                    <div key={log.id} className="bg-slate-950/80 border border-slate-800 rounded-lg p-3 space-y-2">
+                      {/* Tick Header */}
+                      <div className="flex items-center justify-between text-[11px] border-b border-slate-800/60 pb-1.5 text-slate-400">
+                        <span className="font-bold text-emerald-400">Tick #{log.tick} • {log.ticker} @ ${log.price.toFixed(2)}</span>
+                        <span>{log.timestamp}</span>
+                      </div>
+
+                      {/* Quant Signal */}
+                      <div className="text-[11px] space-y-0.5">
+                        <div className="flex items-center justify-between text-blue-400 font-semibold">
+                          <span>[Quant Agent]</span>
+                          <span>Signal: {log.quant.action} ({log.quant.score})</span>
+                        </div>
+                        <p className="text-slate-300 pl-2 border-l-2 border-blue-500/40 text-[10.5px] leading-relaxed">{log.quant.text}</p>
+                      </div>
+
+                      {/* Sentiment Signal */}
+                      <div className="text-[11px] space-y-0.5">
+                        <div className="flex items-center justify-between text-pink-400 font-semibold">
+                          <span>[Sentiment Agent]</span>
+                          <span>Signal: {log.sentiment.action} ({log.sentiment.score})</span>
+                        </div>
+                        <p className="text-slate-300 pl-2 border-l-2 border-pink-500/40 text-[10.5px] leading-relaxed">{log.sentiment.text}</p>
+                      </div>
+
+                      {/* PM Consensus */}
+                      <div className="text-[11px] space-y-0.5 pt-1">
+                        <div className="flex items-center justify-between text-emerald-400 font-bold">
+                          <span>[Portfolio Manager]</span>
+                          <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300">{log.pm.action}</span>
+                        </div>
+                        <p className="text-slate-200 pl-2 border-l-2 border-emerald-500 text-[11px] font-semibold">{log.pm.text}</p>
+                      </div>
+
+                      {/* Risk Manager Clearance */}
+                      <div className="text-[11px] space-y-0.5">
+                        <div className="flex items-center justify-between text-amber-400 font-semibold">
+                          <span>[Risk Manager Guardrail]</span>
+                          <span className={log.risk.approved ? 'text-emerald-400' : 'text-rose-400 font-bold'}>
+                            {log.risk.approved ? 'APPROVED' : 'VETOED'}
+                          </span>
+                        </div>
+                        <p className="text-slate-400 pl-2 border-l-2 border-amber-500/40 text-[10.5px]">{log.risk.text}</p>
+                      </div>
+
+                      {/* Order Execution Confirmation */}
+                      {log.execution && (
+                        <div className="mt-1 p-2 bg-emerald-950/40 border border-emerald-500/30 rounded text-emerald-300 text-[10.5px] flex items-center justify-between">
+                          <span className="flex items-center space-x-1">
+                            <CheckCircle className="w-3.5 h-3.5 text-emerald-400" />
+                            <span>EXECUTION: Filled {log.execution.qty} shares @ ${log.execution.price}</span>
+                          </span>
+                          <span className="font-bold">${log.execution.total.toFixed(2)}</span>
+                        </div>
+                      )}
+                    </div>
+                  ))
+                )}
+                <div ref={logsEndRef} />
+              </div>
+            </div>
+
+          </div>
+        )}
+
+        {/* ================= TAB 2: ARCHITECTURE PIPELINE MAP ================= */}
+        {activeTab === 'map' && (
+          <div className="space-y-6">
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <h2 className="text-lg font-bold text-slate-100 uppercase tracking-wide flex items-center space-x-2">
+                    <Layers className="w-5 h-5 text-emerald-400" />
+                    <span>Multi-Agent System Topology & Pipeline Diagram</span>
+                  </h2>
+                  <p className="text-xs text-slate-400">Click any agent node to inspect system prompt, current memory context, and active weights.</p>
+                </div>
+              </div>
+
+              {/* Topology Visualizer Diagram */}
+              <div className="relative border border-slate-800 bg-slate-950 rounded-xl p-8 min-h-[460px] flex flex-col justify-between overflow-x-auto">
+                
+                {/* Layer 1: Data Ingestion */}
+                <div className="flex justify-center mb-8">
+                  <div className="bg-slate-900 border border-indigo-500/40 px-6 py-2.5 rounded-xl shadow-lg flex items-center space-x-3">
+                    <Database className="w-5 h-5 text-indigo-400" />
+                    <span className="text-xs font-mono font-bold text-slate-200">Data Ingestion Layer (Market Ticks, SEC 10-K, News Feed)</span>
+                  </div>
+                </div>
+
+                {/* Arrow Connector Down */}
+                <div className="flex justify-center my-2 text-slate-600">
+                  <ArrowRight className="w-5 h-5 rotate-90 animate-bounce" />
+                </div>
+
+                {/* Layer 2: Specialized Domain Agents */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 my-4">
+                  {[agents.quant, agents.sentiment, agents.fundamental].map(agent => (
+                    <div
+                      key={agent.id}
+                      onClick={() => setSelectedAgentNode(agent.id)}
+                      className={`cursor-pointer p-4 rounded-xl border transition-all ${
+                        selectedAgentNode === agent.id 
+                          ? 'bg-slate-900 border-emerald-400 ring-2 ring-emerald-500/20 shadow-xl' 
+                          : 'bg-slate-900/60 border-slate-800 hover:border-slate-700'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="w-3 h-3 rounded-full" style={{ backgroundColor: agent.color }}></span>
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-400">Weight: {(agent.weight * 100)}%</span>
+                      </div>
+                      <h3 className="font-bold text-sm text-slate-100">{agent.name}</h3>
+                      <p className="text-xs text-slate-400 mt-1 line-clamp-2">{agent.role}</p>
+                      <div className="mt-3 pt-2 border-t border-slate-800/80 flex items-center justify-between text-xs font-mono">
+                        <span className="text-slate-500">Last Action:</span>
+                        <span className={`font-bold ${
+                          agent.lastSignal.action === 'BUY' ? 'text-emerald-400' :
+                          agent.lastSignal.action === 'SELL' ? 'text-rose-400' : 'text-slate-300'
+                        }`}>{agent.lastSignal.action} ({agent.lastSignal.score})</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Arrow Connectors to Portfolio Manager */}
+                <div className="flex justify-center my-2 text-slate-600">
+                  <ArrowRight className="w-5 h-5 rotate-90" />
+                </div>
+
+                {/* Layer 3: Portfolio Manager Synthesizer */}
+                <div className="flex justify-center my-2">
+                  <div
+                    onClick={() => setSelectedAgentNode('portfolio_manager')}
+                    className={`cursor-pointer max-w-md w-full p-4 rounded-xl border transition-all ${
+                      selectedAgentNode === 'portfolio_manager' 
+                        ? 'bg-slate-900 border-emerald-400 ring-2 ring-emerald-500/20 shadow-xl' 
+                        : 'bg-slate-900/80 border-slate-800 hover:border-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="w-3 h-3 rounded-full bg-emerald-500"></span>
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">Decision Aggregator</span>
+                    </div>
+                    <h3 className="font-bold text-sm text-slate-100 text-center">{agents.portfolio_manager.name}</h3>
+                    <p className="text-xs text-slate-400 text-center mt-1">{agents.portfolio_manager.role}</p>
+                  </div>
+                </div>
+
+                {/* Arrow Connector to Risk Manager */}
+                <div className="flex justify-center my-2 text-slate-600">
+                  <ArrowRight className="w-5 h-5 rotate-90" />
+                </div>
+
+                {/* Layer 4: Risk Manager Veto & Execution */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 my-2">
+                  {[agents.risk_manager, agents.execution].map(agent => (
+                    <div
+                      key={agent.id}
+                      onClick={() => setSelectedAgentNode(agent.id)}
+                      className={`cursor-pointer p-4 rounded-xl border transition-all ${
+                        selectedAgentNode === agent.id 
+                          ? 'bg-slate-900 border-emerald-400 ring-2 ring-emerald-500/20 shadow-xl' 
+                          : 'bg-slate-900/60 border-slate-800 hover:border-slate-700'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="w-3 h-3 rounded-full" style={{ backgroundColor: agent.color }}></span>
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-400">{agent.id === 'risk_manager' ? 'Hard Veto Gate' : 'Broker API'}</span>
+                      </div>
+                      <h3 className="font-bold text-sm text-slate-100">{agent.name}</h3>
+                      <p className="text-xs text-slate-400 mt-1">{agent.role}</p>
+                    </div>
+                  ))}
+                </div>
+
+              </div>
+            </div>
+
+            {/* Selected Agent Inspection Drawer */}
+            {selectedAgentNode && (
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4 font-mono text-xs">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                  <div className="flex items-center space-x-3">
+                    <span className="w-3 h-3 rounded-full" style={{ backgroundColor: agents[selectedAgentNode].color }}></span>
+                    <h3 className="text-sm font-bold text-slate-100">{agents[selectedAgentNode].name} Node Inspector</h3>
+                  </div>
+                  <span className="text-slate-500">Model: {agents[selectedAgentNode].model}</span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="space-y-2">
+                    <label className="text-slate-400 font-semibold block">System Prompt Instructions:</label>
+                    <div className="bg-slate-950 p-3 rounded-lg border border-slate-800 text-slate-300 leading-relaxed text-[11px] whitespace-pre-wrap">
+                      {agents[selectedAgentNode].prompt}
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div>
+                      <label className="text-slate-400 font-semibold block mb-1">Active Memory Buffers:</label>
+                      <ul className="bg-slate-950 p-3 rounded-lg border border-slate-800 space-y-1.5 text-slate-300 text-[11px]">
+                        {agents[selectedAgentNode].memory.map((mem, idx) => (
+                          <li key={idx} className="flex items-center space-x-2">
+                            <span className="text-emerald-400">•</span>
+                            <span>{mem}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+
+                    <div>
+                      <label className="text-slate-400 font-semibold block mb-1">Latest Reasoning Trace:</label>
+                      <div className="bg-slate-950 p-3 rounded-lg border border-slate-800 text-emerald-300 text-[11px]">
+                        {agents[selectedAgentNode].lastSignal.reasoning}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ================= TAB 3: AGENT PROMPT & WEIGHT STUDIO ================= */}
+        {activeTab === 'studio' && (
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            
+            {/* Left: Agent Selection Column */}
+            <div className="lg:col-span-4 space-y-3">
+              <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">Configure Firm Agents</h2>
+              {Object.values(agents).map(agent => (
+                <button
+                  key={agent.id}
+                  onClick={() => setSelectedAgentNode(agent.id)}
+                  className={`w-full text-left p-4 rounded-xl border transition-all flex items-center justify-between ${
+                    selectedAgentNode === agent.id
+                      ? 'bg-slate-900 border-emerald-400 ring-2 ring-emerald-500/20'
+                      : 'bg-slate-900/60 border-slate-800 hover:border-slate-700'
+                  }`}
+                >
+                  <div className="flex items-center space-x-3">
+                    <span className="w-3 h-3 rounded-full" style={{ backgroundColor: agent.color }}></span>
+                    <div>
+                      <div className="font-bold text-xs text-slate-200">{agent.name}</div>
+                      <div className="text-[10px] text-slate-400">{agent.model}</div>
+                    </div>
+                  </div>
+                  <span className="text-xs font-mono font-semibold text-slate-400">{(agent.weight * 100)}%</span>
+                </button>
+              ))}
+            </div>
+
+            {/* Right: Selected Agent Editor Form */}
+            <div className="lg:col-span-8 bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-6">
+              <div className="flex items-center justify-between border-b border-slate-800 pb-4">
+                <div>
+                  <h3 className="font-bold text-base text-slate-100">{agents[selectedAgentNode].name} Tuning Studio</h3>
+                  <p className="text-xs text-slate-400">Adjust system prompts, model temperature, and consensus weight in the decision engine.</p>
+                </div>
+                <button
+                  onClick={() => alert('Agent parameters updated successfully!')}
+                  className="px-4 py-2 bg-emerald-500 text-slate-950 font-bold rounded-lg text-xs hover:bg-emerald-400 transition-colors"
+                >
+                  Save Configuration
+                </button>
+              </div>
+
+              {/* System Prompt Textarea */}
+              <div className="space-y-2">
+                <label className="text-xs font-semibold text-slate-300 block">System Persona Prompt:</label>
+                <textarea
+                  rows={6}
+                  value={agents[selectedAgentNode].prompt}
+                  onChange={(e) => {
+                    const newPrompt = e.target.value;
+                    setAgents(prev => ({
+                      ...prev,
+                      [selectedAgentNode]: { ...prev[selectedAgentNode], prompt: newPrompt }
+                    }));
+                  }}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-xs text-slate-200 font-mono focus:outline-none focus:border-emerald-500 leading-relaxed"
+                />
+              </div>
+
+              {/* Parameter Sliders */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 font-mono text-xs">
+                
+                {/* Temperature Slider */}
+                <div className="space-y-2 bg-slate-950 p-4 border border-slate-800 rounded-lg">
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Temperature:</span>
+                    <span className="text-emerald-400 font-bold">{agents[selectedAgentNode].temperature}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.0"
+                    max="1.0"
+                    step="0.05"
+                    value={agents[selectedAgentNode].temperature}
+                    onChange={(e) => {
+                      const val = parseFloat(e.target.value);
+                      setAgents(prev => ({
+                        ...prev,
+                        [selectedAgentNode]: { ...prev[selectedAgentNode], temperature: val }
+                      }));
+                    }}
+                    className="w-full accent-emerald-500"
+                  />
+                  <p className="text-[10px] text-slate-500">Lower = deterministic, Higher = creative analysis.</p>
+                </div>
+
+                {/* Agent Decision Weight */}
+                <div className="space-y-2 bg-slate-950 p-4 border border-slate-800 rounded-lg">
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Consensus Weight:</span>
+                    <span className="text-emerald-400 font-bold">{(agents[selectedAgentNode].weight * 100).toFixed(0)}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.0"
+                    max="1.0"
+                    step="0.05"
+                    value={agents[selectedAgentNode].weight}
+                    onChange={(e) => {
+                      const val = parseFloat(e.target.value);
+                      setAgents(prev => ({
+                        ...prev,
+                        [selectedAgentNode]: { ...prev[selectedAgentNode], weight: val }
+                      }));
+                    }}
+                    className="w-full accent-emerald-500"
+                  />
+                  <p className="text-[10px] text-slate-500">Weight priority in final PM signal calculation.</p>
+                </div>
+
+                {/* LLM Model Selection */}
+                <div className="space-y-2 bg-slate-950 p-4 border border-slate-800 rounded-lg">
+                  <span className="text-slate-400 block">Model Engine:</span>
+                  <select
+                    value={agents[selectedAgentNode].model}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setAgents(prev => ({
+                        ...prev,
+                        [selectedAgentNode]: { ...prev[selectedAgentNode], model: val }
+                      }));
+                    }}
+                    className="w-full bg-slate-900 border border-slate-800 rounded p-2 text-xs text-slate-200 focus:outline-none"
+                  >
+                    <option value="gemini-3.1-flash-preview">Gemini 3.1 Flash</option>
+                    <option value="gpt-4o">GPT-4o (Simulated)</option>
+                    <option value="claude-3-5-sonnet">Claude 3.5 Sonnet (Simulated)</option>
+                    <option value="llama-3-70b">Llama 3 70B (Simulated)</option>
+                  </select>
+                </div>
+
+              </div>
+            </div>
+
+          </div>
+        )}
+
+        {/* ================= TAB 4: RISK GUARDRAILS & CRO RULES ================= */}
+        {activeTab === 'risk' && (
+          <div className="space-y-6">
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-6">
+              <div className="flex items-center space-x-3 border-b border-slate-800 pb-4">
+                <div className="p-2 bg-amber-500/10 border border-amber-500/30 rounded-lg text-amber-400">
+                  <Shield className="w-6 h-6" />
+                </div>
+                <div>
+                  <h2 className="text-base font-bold text-slate-100">Chief Risk Officer (CRO) Guardrails Engine</h2>
+                  <p className="text-xs text-slate-400">Hard programmatic limits enforced before any trade order execution.</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 font-mono text-xs">
+                
+                {/* Rule 1: Max Position Size */}
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-5 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-300 font-bold">Max Position Size</span>
+                    <span className="text-amber-400 font-bold text-sm">{riskRules.maxPositionSizePercent}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="5"
+                    max="50"
+                    value={riskRules.maxPositionSizePercent}
+                    onChange={(e) => setRiskRules(prev => ({ ...prev, maxPositionSizePercent: Number(e.target.value) }))}
+                    className="w-full accent-amber-500"
+                  />
+                  <p className="text-[11px] text-slate-400 leading-normal">
+                    Caps maximum allocation of portfolio equity into a single stock or asset.
+                  </p>
+                </div>
+
+                {/* Rule 2: Max Drawdown Circuit Breaker */}
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-5 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-300 font-bold">Max Drawdown Limit</span>
+                    <span className="text-rose-400 font-bold text-sm">{riskRules.maxDrawdownThreshold}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="3"
+                    max="20"
+                    step="0.5"
+                    value={riskRules.maxDrawdownThreshold}
+                    onChange={(e) => setRiskRules(prev => ({ ...prev, maxDrawdownThreshold: Number(e.target.value) }))}
+                    className="w-full accent-rose-500"
+                  />
+                  <p className="text-[11px] text-slate-400 leading-normal">
+                    Triggers automated trade freeze if portfolio drawdown exceeds threshold.
+                  </p>
+                </div>
+
+                {/* Rule 3: Default Stop Loss */}
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-5 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-300 font-bold">Dynamic Stop Loss %</span>
+                    <span className="text-emerald-400 font-bold text-sm">{riskRules.defaultStopLossPercent}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="1"
+                    max="10"
+                    step="0.5"
+                    value={riskRules.defaultStopLossPercent}
+                    onChange={(e) => setRiskRules(prev => ({ ...prev, defaultStopLossPercent: Number(e.target.value) }))}
+                    className="w-full accent-emerald-500"
+                  />
+                  <p className="text-[11px] text-slate-400 leading-normal">
+                    Automatically attached to every newly opened long position order.
+                  </p>
+                </div>
+
+                {/* Risk Profile Selection */}
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-5 space-y-3">
+                  <span className="text-slate-300 font-bold block">Risk Mode Preset</span>
+                  <div className="grid grid-cols-3 gap-2">
+                    {['CONSERVATIVE', 'BALANCED', 'AGGRESSIVE'].map(mode => (
+                      <button
+                        key={mode}
+                        onClick={() => setRiskRules(prev => ({ ...prev, riskTolerance: mode }))}
+                        className={`py-2 rounded text-[10px] font-bold transition-all ${
+                          riskRules.riskTolerance === mode
+                            ? 'bg-amber-500 text-slate-950'
+                            : 'bg-slate-900 text-slate-400 hover:bg-slate-800'
+                        }`}
+                      >
+                        {mode}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* CRO Manual Override Switch */}
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-5 space-y-3 flex flex-col justify-between">
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-300 font-bold">CRO Veto Enforcement</span>
+                    <input
+                      type="checkbox"
+                      checked={riskRules.requireCroApproval}
+                      onChange={(e) => setRiskRules(prev => ({ ...prev, requireCroApproval: e.target.checked }))}
+                      className="w-4 h-4 accent-amber-500 rounded"
+                    />
+                  </div>
+                  <p className="text-[11px] text-slate-400">
+                    When enabled, Risk Manager agent retains absolute veto over Portfolio Manager trades.
+                  </p>
+                </div>
+
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ================= TAB 5: AUDIT LOG & OPEN POSITIONS ================= */}
+        {activeTab === 'history' && (
+          <div className="space-y-6">
+            
+            {/* Open Positions Table */}
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4">
+              <h2 className="font-bold text-sm text-slate-200 uppercase tracking-wide flex items-center space-x-2">
+                <PieChart className="w-4 h-4 text-emerald-400" />
+                <span>Active Portfolio Positions</span>
+              </h2>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse font-mono text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-800 text-slate-400">
+                      <th className="py-3 px-4">TICKER</th>
+                      <th className="py-3 px-4">SHARES</th>
+                      <th className="py-3 px-4">ENTRY PRICE</th>
+                      <th className="py-3 px-4">CURRENT PRICE</th>
+                      <th className="py-3 px-4">STOP LOSS</th>
+                      <th className="py-3 px-4">UNREALIZED P&L</th>
+                      <th className="py-3 px-4 text-right">ACTION</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60 text-slate-200">
+                    {positions.map((pos) => (
+                      <tr key={pos.id} className="hover:bg-slate-800/40">
+                        <td className="py-3 px-4 font-bold text-emerald-400">{pos.ticker}</td>
+                        <td className="py-3 px-4">{pos.shares}</td>
+                        <td className="py-3 px-4">${pos.entryPrice.toFixed(2)}</td>
+                        <td className="py-3 px-4">${pos.currentPrice.toFixed(2)}</td>
+                        <td className="py-3 px-4 text-amber-400">${pos.stopLoss.toFixed(2)}</td>
+                        <td className={`py-3 px-4 font-bold ${pos.pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                          {pos.pnl >= 0 ? '+' : ''}${pos.pnl.toFixed(2)} ({pos.pnlPercent}%)
+                        </td>
+                        <td className="py-3 px-4 text-right">
+                          <button
+                            onClick={() => {
+                              setPositions(prev => prev.filter(p => p.id !== pos.id));
+                              setPortfolio(prev => ({ ...prev, cash: prev.cash + (pos.shares * pos.currentPrice) }));
+                            }}
+                            className="px-2.5 py-1 bg-rose-500/20 text-rose-400 border border-rose-500/30 rounded text-[11px] hover:bg-rose-500/30"
+                          >
+                            Close Position
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Execution Trade Audit Log */}
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4">
+              <h2 className="font-bold text-sm text-slate-200 uppercase tracking-wide flex items-center space-x-2">
+                <FileText className="w-4 h-4 text-emerald-400" />
+                <span>Trade Order Execution Log</span>
+              </h2>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse font-mono text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-800 text-slate-400">
+                      <th className="py-3 px-4">TIMESTAMP</th>
+                      <th className="py-3 px-4">ORDER ID</th>
+                      <th className="py-3 px-4">TICKER</th>
+                      <th className="py-3 px-4">ACTION</th>
+                      <th className="py-3 px-4">QTY</th>
+                      <th className="py-3 px-4">FILL PRICE</th>
+                      <th className="py-3 px-4">TOTAL VALUE</th>
+                      <th className="py-3 px-4">STATUS</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60 text-slate-300">
+                    {tradeHistory.map((tr) => (
+                      <tr key={tr.id} className="hover:bg-slate-800/40">
+                        <td className="py-3 px-4 text-slate-400">{tr.timestamp}</td>
+                        <td className="py-3 px-4 font-mono text-slate-500">{tr.id}</td>
+                        <td className="py-3 px-4 font-bold text-slate-100">{tr.ticker}</td>
+                        <td className="py-3 px-4">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                            tr.action === 'BUY' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'
+                          }`}>
+                            {tr.action}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4">{tr.qty}</td>
+                        <td className="py-3 px-4">${tr.price.toFixed(2)}</td>
+                        <td className="py-3 px-4 font-bold text-slate-200">${tr.total.toFixed(2)}</td>
+                        <td className="py-3 px-4 text-emerald-400 font-semibold">{tr.status}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+          </div>
+        )}
+
+      </main>
+
+      {/* FOOTER STATUS BAR */}
+      <footer className="border-t border-slate-800 bg-slate-900/90 px-6 py-2 flex flex-wrap items-center justify-between text-[11px] text-slate-400 font-mono">
+        <div className="flex items-center space-x-4">
+          <span className="flex items-center space-x-1.5">
+            <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+            <span>Broker API: Connected (Alpaca Paper Router)</span>
+          </span>
+          <span>•</span>
+          <span>Risk Engine: ACTIVE</span>
+        </div>
+        <div>
+          <span>Multi-Agent LLM Capital Simulation Engine</span>
+        </div>
+      </footer>
+
+    </div>
+  );
+}
